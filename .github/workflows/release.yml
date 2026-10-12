@@ -1,0 +1,173 @@
+# ============================================================
+# release.yml — Tag-based deployment (DEV auto, TEST manual)
+#
+# Triggers on push of tags matching v*.*.*
+#
+# Jobs:
+#   1. deploy-dev  — auto-deploys to DEV (environment: dev)
+#   2. deploy-test — deploys to TEST after manual approval
+#                    (environment: test — requires reviewer)
+# ============================================================
+name: Release Deploy
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  id-token: write             # OIDC (remove if using key-pair)
+
+env:
+  SNOWFLAKE_ACCOUNT:     ${{ secrets.SNOWFLAKE_ACCOUNT }}
+  SNOWFLAKE_USER:        ${{ secrets.SNOWFLAKE_USER }}
+  SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+
+jobs:
+  # ════════════════════════════════════════════════════════════
+  # JOB 1: Deploy to DEV (automatic)
+  # ════════════════════════════════════════════════════════════
+  deploy-dev:
+    name: Deploy to DEV
+    runs-on: ubuntu-latest
+    environment: dev            # GitHub environment (no protection rules)
+    env:
+      TARGET: DEV
+      DCM_PROJECT: FBL_DEMO.DCM.POLICY_PROJECT_DEV
+      SNOW_ROLE: DCM_DEV_DEPLOYER
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snowflake CLI
+        run: |
+          pip install --quiet snowflake-cli
+          snow --version
+
+      - name: Configure Snowflake connection
+        run: |
+          mkdir -p ~/.snowflake
+          echo "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/rsa_key.p8
+          chmod 600 ~/.snowflake/rsa_key.p8
+          cat > ~/.snowflake/config.toml <<EOF
+          [connections.default]
+          account = "$SNOWFLAKE_ACCOUNT"
+          user = "$SNOWFLAKE_USER"
+          authenticator = "SNOWFLAKE_JWT"
+          private_key_file = "~/.snowflake/rsa_key.p8"
+          role = "$SNOW_ROLE"
+          warehouse = "FBL_DEMO_WH"
+          EOF
+
+      # ── Plan ──────────────────────────────────────────────
+      - name: Plan (${{ env.TARGET }})
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          echo "🏷️  Tag: $TAG"
+          echo "📋 Planning DCM changes for $TARGET..."
+          snow dcm plan $DCM_PROJECT --target $TARGET --save-output
+
+      # ── Deploy with alias = git tag ───────────────────────
+      - name: Deploy (${{ env.TARGET }})
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          echo "🚀 Deploying $TAG to $TARGET..."
+          snow dcm deploy $DCM_PROJECT --target $TARGET --alias "$TAG"
+
+      # ── Post-deploy: seed data + release log ──────────────
+      - name: Post-deploy script
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          echo "📝 Running post_deploy.sql..."
+          snow sql -f post_deploy.sql \
+            -D "VERSION=$TAG" \
+            -D "ENV=$TARGET" \
+            -D "GIT_SHA=$GITHUB_SHA" \
+            -D "DEPLOYED_BY=github-actions"
+
+      # ── Data quality tests ────────────────────────────────
+      - name: Run DCM tests (${{ env.TARGET }})
+        run: |
+          echo "🧪 Running data quality expectations..."
+          snow dcm test $DCM_PROJECT --target $TARGET
+
+  # ════════════════════════════════════════════════════════════
+  # JOB 2: Deploy to TEST (manual approval gate)
+  # ════════════════════════════════════════════════════════════
+  deploy-test:
+    name: Deploy to TEST (approval required)
+    runs-on: ubuntu-latest
+    needs: deploy-dev           # only runs after DEV succeeds
+    environment: test           # ← GitHub environment with Required Reviewers
+    env:
+      TARGET: TEST
+      DCM_PROJECT: FBL_DEMO.DCM.POLICY_PROJECT_TEST
+      SNOW_ROLE: DCM_TEST_DEPLOYER
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snowflake CLI
+        run: |
+          pip install --quiet snowflake-cli
+          snow --version
+
+      - name: Configure Snowflake connection
+        run: |
+          mkdir -p ~/.snowflake
+          echo "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/rsa_key.p8
+          chmod 600 ~/.snowflake/rsa_key.p8
+          cat > ~/.snowflake/config.toml <<EOF
+          [connections.default]
+          account = "$SNOWFLAKE_ACCOUNT"
+          user = "$SNOWFLAKE_USER"
+          authenticator = "SNOWFLAKE_JWT"
+          private_key_file = "~/.snowflake/rsa_key.p8"
+          role = "$SNOW_ROLE"
+          warehouse = "FBL_DEMO_WH"
+          EOF
+
+      # ── Plan ──────────────────────────────────────────────
+      - name: Plan (${{ env.TARGET }})
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          echo "🏷️  Tag: $TAG"
+          echo "📋 Planning DCM changes for $TARGET..."
+          snow dcm plan $DCM_PROJECT --target $TARGET --save-output
+
+      # ── Deploy with alias = git tag ───────────────────────
+      - name: Deploy (${{ env.TARGET }})
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          echo "🚀 Deploying $TAG to $TARGET..."
+          snow dcm deploy $DCM_PROJECT --target $TARGET --alias "$TAG"
+
+      # ── Post-deploy: seed data + release log ──────────────
+      - name: Post-deploy script
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          echo "📝 Running post_deploy.sql..."
+          snow sql -f post_deploy.sql \
+            -D "VERSION=$TAG" \
+            -D "ENV=$TARGET" \
+            -D "GIT_SHA=$GITHUB_SHA" \
+            -D "DEPLOYED_BY=github-actions"
+
+      # ── Data quality tests ────────────────────────────────
+      - name: Run DCM tests (${{ env.TARGET }})
+        run: |
+          echo "🧪 Running data quality expectations..."
+          snow dcm test $DCM_PROJECT --target $TARGET

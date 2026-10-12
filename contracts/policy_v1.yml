@@ -1,0 +1,21 @@
+# Published column contract for SERVE.POLICY_V1
+# Any change to this contract (column drop, rename, type change)
+# is flagged as BREAKING by scripts/check_breaking.py.
+
+contract:
+  view: POLICY_V1
+  schema: SERVE
+  version: 1
+  columns:
+    - name: POLICY_ID
+      type: NUMBER
+    - name: POLICYHOLDER_NAME
+      type: VARCHAR
+    - name: PRODUCT_TYPE
+      type: VARCHAR
+    - name: ISSUE_DATE
+      type: DATE
+    - name: PREMIUM_AMT
+      type: NUMBER
+    - name: STATUS
+      type: VARCHAR

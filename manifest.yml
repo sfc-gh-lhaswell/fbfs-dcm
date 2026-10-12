@@ -1,0 +1,24 @@
+manifest_version: 2
+type: DCM_PROJECT
+default_target: 'DEV'
+
+targets:
+  DEV:
+    account_identifier: ZKB94920
+    project_name: 'FBL_DEMO.DCM.POLICY_PROJECT_DEV'
+    project_owner: DCM_DEV_DEPLOYER
+    templating_config: 'DEV'
+  TEST:
+    account_identifier: ZKB94920
+    project_name: 'FBL_DEMO.DCM.POLICY_PROJECT_TEST'
+    project_owner: DCM_TEST_DEPLOYER
+    templating_config: 'TEST'
+
+templating:
+  defaults:
+    env: 'DEV'
+  configurations:
+    DEV:
+      env: 'DEV'
+    TEST:
+      env: 'TEST'

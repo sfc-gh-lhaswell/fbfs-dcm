@@ -65,6 +65,7 @@ jobs:
           role = "$SNOW_ROLE"
           warehouse = "FBL_DEMO_WH"
           EOF
+          chmod 600 ~/.snowflake/config.toml
 
       # ── Plan ──────────────────────────────────────────────
       - name: Plan (${{ env.TARGET }})
@@ -139,6 +140,7 @@ jobs:
           role = "$SNOW_ROLE"
           warehouse = "FBL_DEMO_WH"
           EOF
+          chmod 600 ~/.snowflake/config.toml
 
       # ── Plan ──────────────────────────────────────────────
       - name: Plan (${{ env.TARGET }})

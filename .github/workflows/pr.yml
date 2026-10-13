@@ -70,6 +70,7 @@ jobs:
           role = "DCM_DEV_DEPLOYER"
           warehouse = "FBL_DEMO_WH"
           EOF
+          chmod 600 ~/.snowflake/config.toml
 
       # ── Step 1: Analyze ───────────────────────────────────
       - name: Analyze definitions (syntax + dependency check)

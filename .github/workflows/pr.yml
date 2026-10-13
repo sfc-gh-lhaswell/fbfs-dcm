@@ -1,0 +1,150 @@
+# ============================================================
+# pr.yml — Pull Request validation
+#
+# Triggers on every PR. Runs:
+#   1. snow dcm raw-analyze  (syntax + dependency check)
+#   2. snow dcm plan --target DEV --save-output
+#   3. scripts/check_breaking.py  (contract violation check)
+#   4. Posts a markdown summary as a PR comment
+# ============================================================
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write        # needed to post PR comments
+  id-token: write             # needed for OIDC auth (remove if using key-pair)
+
+env:
+  # -- Snowflake connection (key-pair path) --
+  # These come from GitHub repo secrets. See docs/oidc_setup.sql
+  # for the OIDC alternative.
+  SNOWFLAKE_ACCOUNT:     ${{ secrets.SNOWFLAKE_ACCOUNT }}
+  SNOWFLAKE_USER:        ${{ secrets.SNOWFLAKE_USER }}
+  SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+
+  # DCM project identifiers
+  DCM_PROJECT_DEV: FBL_DEMO.DCM.POLICY_PROJECT_DEV
+
+jobs:
+  validate:
+    name: Analyze → Plan → Breaking-change check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .    # repo root = project root
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Install tooling ───────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snowflake CLI + dependencies
+        run: |
+          pip install --quiet snowflake-cli pyyaml
+          snow --version
+
+      # ── Configure Snowflake connection ────────────────────
+      # Creates a named connection that snow CLI will use.
+      # Key-pair auth: private key from GitHub secret.
+      - name: Configure Snowflake connection
+        run: |
+          mkdir -p ~/.snowflake
+          echo "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/rsa_key.p8
+          chmod 600 ~/.snowflake/rsa_key.p8
+          cat > ~/.snowflake/config.toml <<'EOF'
+          [connections.default]
+          account = "${{ secrets.SNOWFLAKE_ACCOUNT }}"
+          user = "${{ secrets.SNOWFLAKE_USER }}"
+          authenticator = "SNOWFLAKE_JWT"
+          private_key_file = "~/.snowflake/rsa_key.p8"
+          role = "DCM_DEV_DEPLOYER"
+          warehouse = "FBL_DEMO_WH"
+          EOF
+
+      # ── Step 1: Analyze ───────────────────────────────────
+      - name: Analyze definitions (syntax + dependency check)
+        run: |
+          echo "## 🔍 Analyzing DCM definitions (DEV target)..."
+          snow dcm raw-analyze $DCM_PROJECT_DEV --target DEV
+
+      # ── Step 2: Plan ──────────────────────────────────────
+      - name: Plan changes (DEV target)
+        run: |
+          echo "## 📋 Planning DCM changes (DEV target)..."
+          snow dcm plan $DCM_PROJECT_DEV --target DEV --save-output
+
+      # ── Step 3: Breaking-change check ─────────────────────
+      - name: Check for breaking changes
+        id: breaking
+        run: |
+          # Allow breaking changes only if the PR has the label
+          ALLOW_BREAKING=false
+          if echo '${{ toJSON(github.event.pull_request.labels.*.name) }}' | grep -q 'breaking-change'; then
+            ALLOW_BREAKING=true
+            echo "⚠️  'breaking-change' label detected — allowing breaking changes"
+          fi
+
+          export ALLOW_BREAKING
+          python scripts/check_breaking.py | tee /tmp/breaking_summary.md
+
+      # ── Step 4: Post PR comment ───────────────────────────
+      - name: Post plan summary as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let summary = '';
+            try {
+              summary = fs.readFileSync('/tmp/breaking_summary.md', 'utf8');
+            } catch (e) {
+              summary = '⚠️ Could not read breaking-change summary.';
+            }
+
+            const body = `### DCM Plan Summary — \`DEV\`\n\n${summary}\n\n` +
+              `_Commit: \`${context.sha.substring(0, 7)}\`_`;
+
+            // Find existing bot comment to update (avoid spam)
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('DCM Plan Summary')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # ── Step 5: Upload plan artifact ──────────────────────
+      - name: Upload plan result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dcm-plan-dev
+          path: out/plan/plan_result.json
+          if-no-files-found: warn
